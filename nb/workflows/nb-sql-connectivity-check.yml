@@ -148,6 +148,51 @@ jobs:
 
           echo "path=$NUGET_CONFIG_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve SQL check inputs
+        id: sql_inputs
+        shell: bash
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_QUERY: ${{ github.event.inputs.query }}
+        run: |
+          set -euo pipefail
+
+          TARGET_ENV="${INPUT_ENVIRONMENT:-}"
+          if [ -z "$TARGET_ENV" ]; then
+            TARGET_ENV="stg"
+          fi
+
+          QUERY_INPUT="${INPUT_QUERY:-}"
+          if [ -z "$QUERY_INPUT" ]; then
+            QUERY_INPUT='SELECT DB_NAME() AS DatabaseName, @@SERVERNAME AS ServerName, SUSER_SNAME() AS LoginName, @@VERSION AS SqlVersion'
+          fi
+
+          {
+            echo "environment=$TARGET_ENV"
+            echo "query<<EOF"
+            echo "$QUERY_INPUT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate SQL connection secret
+        shell: bash
+        env:
+          TARGET_ENV: ${{ steps.sql_inputs.outputs.environment }}
+          NB_CONNECTION_STRING_STG: ${{ secrets.NB_CONNECTION_STRING_STG }}
+          NB_CONNECTION_STRING_QA: ${{ secrets.NB_CONNECTION_STRING_QA }}
+        run: |
+          set -euo pipefail
+
+          if [ "$TARGET_ENV" = "stg" ] && [ -z "${NB_CONNECTION_STRING_STG:-}" ]; then
+            echo "Missing required secret NB_CONNECTION_STRING_STG for STG SQL connectivity checks." >&2
+            exit 1
+          fi
+
+          if [ "$TARGET_ENV" = "qa" ] && [ -z "${NB_CONNECTION_STRING_QA:-}" ]; then
+            echo "Missing required secret NB_CONNECTION_STRING_QA for QA SQL connectivity checks." >&2
+            exit 1
+          fi
+
       - name: Restore unit test project
         shell: bash
         run: |
@@ -161,8 +206,8 @@ jobs:
         id: run_sql_check
         shell: bash
         env:
-          ENV: ${{ github.event.inputs.environment }}
-          NB_SQL_CONNECTIVITY_QUERY: ${{ github.event.inputs.query }}
+          ENV: ${{ steps.sql_inputs.outputs.environment }}
+          NB_SQL_CONNECTIVITY_QUERY: ${{ steps.sql_inputs.outputs.query }}
           NB_CONNECTION_STRING_STG: ${{ secrets.NB_CONNECTION_STRING_STG }}
           NB_CONNECTION_STRING_QA: ${{ secrets.NB_CONNECTION_STRING_QA }}
         run: |
@@ -186,10 +231,10 @@ jobs:
           {
             echo "## SQL Connectivity Check"
             echo ""
-            echo "- Environment: ${{ github.event.inputs.environment }}"
+            echo "- Environment: ${{ steps.sql_inputs.outputs.environment }}"
             echo "- sqlcmd available: ${{ steps.sql_tools.outputs.sqlcmd_available }}"
             echo "- Project SQL client: Microsoft.Data.SqlClient 5.2.1"
-            echo "- Query: \`${{ github.event.inputs.query }}\`"
+            echo "- Query: \`${{ steps.sql_inputs.outputs.query }}\`"
             echo "- Result: ${{ steps.run_sql_check.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
