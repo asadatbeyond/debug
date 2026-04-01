@@ -1,0 +1,195 @@
+name: NightlyBilling SQL Connectivity Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - stg
+          - qa
+        default: stg
+      query:
+        description: SQL query to run
+        required: false
+        default: SELECT DB_NAME() AS DatabaseName, @@SERVERNAME AS ServerName, SUSER_SNAME() AS LoginName, @@VERSION AS SqlVersion
+
+permissions:
+  contents: read
+
+jobs:
+  sql_connectivity_check:
+    name: Check SQL connectivity
+    runs-on:
+      group: QA
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve module directory
+        id: module_dir
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULE_DIR="."
+          if [ -f "NightlyBilling.sln" ]; then
+            MODULE_DIR="."
+          elif [ -f "NightlyBilling/NightlyBilling.sln" ]; then
+            MODULE_DIR="NightlyBilling"
+          else
+            echo "Could not locate NightlyBilling.sln in the repo root or ./NightlyBilling." >&2
+            exit 1
+          fi
+
+          echo "path=$MODULE_DIR" >> "$GITHUB_OUTPUT"
+          echo "NightlyBilling module directory: $MODULE_DIR"
+
+      - name: Ensure SQL client tools available
+        id: sql_tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if command -v sqlcmd >/dev/null 2>&1; then
+            echo "sqlcmd is already installed."
+            echo "sqlcmd_available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "sqlcmd is not installed."
+          echo "This project uses Microsoft.Data.SqlClient 5.2.1, so a full SQL Server installation is not required on the runner."
+          echo "Attempting to install sqlcmd client tools for additional diagnostics."
+
+          if [ "$(uname -s)" != "Linux" ] || ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1; then
+            echo "Automatic sqlcmd installation is only configured for Linux runners with apt-get and sudo."
+            echo "sqlcmd_available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          . /etc/os-release
+          UBUNTU_VERSION="${VERSION_ID:-22.04}"
+          if [ "$UBUNTU_VERSION" != "22.04" ] && [ "$UBUNTU_VERSION" != "24.04" ]; then
+            UBUNTU_VERSION="22.04"
+          fi
+
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo gpg --dearmor --batch --yes -o /etc/apt/keyrings/microsoft.gpg
+          curl -fsSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
+            | sed 's#signed-by=/usr/share/keyrings/microsoft-prod.gpg#signed-by=/etc/apt/keyrings/microsoft.gpg#' \
+            | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
+
+          sudo ACCEPT_EULA=Y apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
+
+          echo "/opt/mssql-tools18/bin" >> "$GITHUB_PATH"
+          echo "sqlcmd_available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Configure NuGet
+        id: nuget
+        shell: bash
+        env:
+          NB_NUGET_CONFIG_BASE64: ${{ secrets.NB_NUGET_CONFIG_BASE64 }}
+          AZURE_DEVOPS_PASSWORD: ${{ secrets.AZURE_DEVOPS_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          MODULE_DIR="${{ steps.module_dir.outputs.path }}"
+          NUGET_CONFIG_PATH="$MODULE_DIR/NuGet.sqlcheck.config"
+
+          if [ -n "${AZURE_DEVOPS_PASSWORD:-}" ]; then
+            printf '%s\n' \
+              '<?xml version="1.0" encoding="utf-8"?>' \
+              '<configuration>' \
+              '  <packageSources>' \
+              '    <add key="VaxCare" value="https://pkgs.dev.azure.com/VaxCareCorp/Development/_packaging/vaxnuget/nuget/v3/index.json" />' \
+              '    <add key="NuGet" value="https://api.nuget.org/v3/index.json" />' \
+              '  </packageSources>' \
+              '  <packageSourceCredentials>' \
+              '    <VaxCare>' \
+              '      <add key="Username" value="AzureDevOps" />' \
+              "      <add key=\"ClearTextPassword\" value=\"${AZURE_DEVOPS_PASSWORD}\" />" \
+              '    </VaxCare>' \
+              '  </packageSourceCredentials>' \
+              '</configuration>' \
+              > "$NUGET_CONFIG_PATH"
+          elif [ -n "${NB_NUGET_CONFIG_BASE64:-}" ]; then
+            echo "${NB_NUGET_CONFIG_BASE64}" | base64 --decode > "$NUGET_CONFIG_PATH"
+          else
+            printf '%s\n' \
+              '<?xml version="1.0" encoding="utf-8"?>' \
+              '<configuration>' \
+              '  <packageSources>' \
+              '    <add key="NuGet" value="https://api.nuget.org/v3/index.json" />' \
+              '  </packageSources>' \
+              '</configuration>' \
+              > "$NUGET_CONFIG_PATH"
+          fi
+
+          echo "path=$NUGET_CONFIG_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Restore unit test project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MODULE_DIR="${{ steps.module_dir.outputs.path }}"
+          dotnet restore "$MODULE_DIR/NightlyBillingUnitTests/NightlyBillingUnitTests.csproj" \
+            --configfile "${{ steps.nuget.outputs.path }}"
+
+      - name: Run SQL connectivity smoke test
+        id: run_sql_check
+        shell: bash
+        env:
+          ENV: ${{ github.event.inputs.environment }}
+          NB_SQL_CONNECTIVITY_QUERY: ${{ github.event.inputs.query }}
+          NB_CONNECTION_STRING_STG: ${{ secrets.NB_CONNECTION_STRING_STG }}
+          NB_CONNECTION_STRING_QA: ${{ secrets.NB_CONNECTION_STRING_QA }}
+        run: |
+          set -euo pipefail
+
+          MODULE_DIR="${{ steps.module_dir.outputs.path }}"
+          RESULTS_DIR="$PWD/TestResults/sql-connectivity"
+
+          : > sql-connectivity-output.log
+          mkdir -p "$RESULTS_DIR"
+          dotnet test "$MODULE_DIR/NightlyBillingUnitTests/NightlyBillingUnitTests.csproj" \
+            --no-restore \
+            --logger "trx;LogFileName=sql-connectivity.trx" \
+            --results-directory "$RESULTS_DIR" \
+            --filter "FullyQualifiedName~NightlyBillingUnitTests.SqlConnectivitySmokeTests" 2>&1 | tee -a sql-connectivity-output.log
+
+      - name: Write GitHub summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## SQL Connectivity Check"
+            echo ""
+            echo "- Environment: ${{ github.event.inputs.environment }}"
+            echo "- sqlcmd available: ${{ steps.sql_tools.outputs.sqlcmd_available }}"
+            echo "- Project SQL client: Microsoft.Data.SqlClient 5.2.1"
+            echo "- Query: \`${{ github.event.inputs.query }}\`"
+            echo "- Result: ${{ steps.run_sql_check.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload connectivity log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightlybilling-sql-connectivity-log
+          path: |
+            sql-connectivity-output.log
+            TestResults/sql-connectivity
+          if-no-files-found: warn
+          retention-days: 7
