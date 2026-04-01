@@ -88,12 +88,16 @@ jobs:
             UBUNTU_VERSION="22.04"
           fi
 
-          sudo mkdir -p /etc/apt/keyrings
-          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-            | sudo gpg --dearmor --batch --yes -o /etc/apt/keyrings/microsoft.gpg
-          curl -fsSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
-            | sed 's#signed-by=/usr/share/keyrings/microsoft-prod.gpg#signed-by=/etc/apt/keyrings/microsoft.gpg#' \
-            | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
+          if rg -n "packages\\.microsoft\\.com" /etc/apt/sources.list /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then
+            echo "Microsoft apt source already configured on runner; reusing existing repository."
+            sudo rm -f /etc/apt/sources.list.d/mssql-release.list
+          else
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+              | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/microsoft-prod.gpg
+            curl -fsSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
+              | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
+          fi
 
           sudo ACCEPT_EULA=Y apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
