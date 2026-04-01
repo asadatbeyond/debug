@@ -174,7 +174,8 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Validate SQL connection secret
+      - name: Resolve SQL connection mode
+        id: sql_auth
         shell: bash
         env:
           TARGET_ENV: ${{ steps.sql_inputs.outputs.environment }}
@@ -183,15 +184,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$TARGET_ENV" = "stg" ] && [ -z "${NB_CONNECTION_STRING_STG:-}" ]; then
-            echo "Missing required secret NB_CONNECTION_STRING_STG for STG SQL connectivity checks." >&2
-            exit 1
+          CONNECTION_MODE="config"
+
+          if [ "$TARGET_ENV" = "stg" ] && [ -n "${NB_CONNECTION_STRING_STG:-}" ]; then
+            CONNECTION_MODE="secret"
           fi
 
-          if [ "$TARGET_ENV" = "qa" ] && [ -z "${NB_CONNECTION_STRING_QA:-}" ]; then
-            echo "Missing required secret NB_CONNECTION_STRING_QA for QA SQL connectivity checks." >&2
-            exit 1
+          if [ "$TARGET_ENV" = "qa" ] && [ -n "${NB_CONNECTION_STRING_QA:-}" ]; then
+            CONNECTION_MODE="secret"
           fi
+
+          if [ "$CONNECTION_MODE" = "secret" ]; then
+            echo "Using CI secret-based SQL connection string for $TARGET_ENV."
+          else
+            echo "No CI SQL connection secret configured for $TARGET_ENV; falling back to testhost.dll.config and runner integrated auth."
+          fi
+
+          echo "mode=$CONNECTION_MODE" >> "$GITHUB_OUTPUT"
 
       - name: Restore unit test project
         shell: bash
@@ -232,6 +241,7 @@ jobs:
             echo "## SQL Connectivity Check"
             echo ""
             echo "- Environment: ${{ steps.sql_inputs.outputs.environment }}"
+            echo "- Connection mode: ${{ steps.sql_auth.outputs.mode }}"
             echo "- sqlcmd available: ${{ steps.sql_tools.outputs.sqlcmd_available }}"
             echo "- Project SQL client: Microsoft.Data.SqlClient 5.2.1"
             echo "- Query: \`${{ steps.sql_inputs.outputs.query }}\`"
