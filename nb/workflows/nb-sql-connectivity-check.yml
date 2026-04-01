@@ -1,6 +1,12 @@
 name: NightlyBilling SQL Connectivity Check
 
 on:
+  push:
+    branches:
+      - docker-gha
+  pull_request:
+    branches:
+      - docker-gha
   workflow_dispatch:
     inputs:
       environment:
