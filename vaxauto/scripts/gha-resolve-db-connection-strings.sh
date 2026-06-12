@@ -7,12 +7,14 @@ ENV_NAME="${ENV:-STG}"
 ENV_UPPER="$(echo "$ENV_NAME" | tr '[:lower:]' '[:upper:]')"
 APPSETTINGS="VaxCare.Tests/appsettings.${ENV_UPPER}.json"
 
+ENV_LOWER="$(echo "$ENV_UPPER" | tr '[:upper:]' '[:lower:]')"
+
 if [ -z "${DB_USERNAME:-}" ]; then
-  echo "::error::DB_USERNAME is empty. Add it as a repository secret." >&2
+  echo "::error::DB_USERNAME is empty or not set. Add it as a secret on GitHub Environment '${ENV_LOWER}' (or ensure the job can read environment secrets)." >&2
   exit 1
 fi
 if [ -z "${DB_PASSWORD:-}" ]; then
-  echo "::error::DB_PASSWORD is empty. Add it as a repository secret." >&2
+  echo "::error::DB_PASSWORD is empty or not set. Add it as a secret on GitHub Environment '${ENV_LOWER}' (or ensure the job can read environment secrets)." >&2
   exit 1
 fi
 
