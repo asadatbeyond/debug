@@ -30,27 +30,25 @@ echo "DB user (masked): $USER_PREVIEW"
 echo "DB password (masked): $PASS_PREVIEW"
 echo "Building ConnectionStrings__* from $APPSETTINGS for ENV=$ENV_UPPER"
 
-BASE_LINES="$(python3 scripts/export-sql-connection-strings.py "$APPSETTINGS" --bases-only)" || {
-  echo "::error::Could not read connection string bases from $APPSETTINGS. Ensure ConnectionStrings entries are non-empty (server/catalog only; Integrated Security is stripped in CI)." >&2
+RESOLVED_LINES="$(python3 scripts/export-sql-connection-strings.py "$APPSETTINGS" --resolve)" || {
+  echo "::error::Could not build connection strings from $APPSETTINGS. Ensure ConnectionStrings entries are non-empty (server/catalog only; Integrated Security is stripped in CI)." >&2
   exit 1
 }
 
-if [ -z "${BASE_LINES//[[:space:]]/}" ]; then
-  echo "::error::No connection string bases found in $APPSETTINGS." >&2
+if [ -z "${RESOLVED_LINES//[[:space:]]/}" ]; then
+  echo "::error::No connection strings resolved from $APPSETTINGS." >&2
   exit 1
 fi
 
-while IFS=$'\t' read -r name base; do
-  if [ -z "${name:-}" ] || [ -z "${base:-}" ]; then
+while IFS=$'\t' read -r name resolved; do
+  if [ -z "${name:-}" ] || [ -z "${resolved:-}" ]; then
     continue
   fi
 
-  # Append SQL login in bash (same as NightlyBilling) so special characters in DB_PASSWORD are safe.
-  resolved="${base};User ID=${DB_USERNAME};Password=${DB_PASSWORD};Integrated Security=False"
   export "ConnectionStrings__${name}=${resolved}"
   echo "::add-mask::${resolved}"
-  echo "Connection string ${name} (log-safe, no credentials): ${base};Integrated Security=False"
-done <<< "$BASE_LINES"
+  echo "Connection string ${name} resolved (credentials masked)."
+done <<< "$RESOLVED_LINES"
 
 for key in "${REQUIRED_KEYS[@]}"; do
   var="ConnectionStrings__${key}"
