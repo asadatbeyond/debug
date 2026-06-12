@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build ConnectionStrings__* exports from appsettings template + SQL login (GHA / Docker).
+"""Read connection string bases from appsettings JSON (strip Windows auth for CI SQL login).
 
-Mirrors NightlyBilling scripts/connection_string_base_from_testhost_config.py:
-strip Integrated Security, append User ID / Password for Linux CI runners.
+Mirrors NightlyBilling scripts/connection_string_base_from_testhost_config.py.
+Credentials are appended in bash (gha-resolve-db-connection-strings.sh), not here.
 """
 
 from __future__ import annotations
@@ -29,37 +29,52 @@ def strip_windows_auth(connection_string: str) -> str:
     return ";".join(parts)
 
 
-def build_sql_connection_string(base: str, username: str, password: str) -> str:
-    base = strip_windows_auth(base)
-    return f"{base};User ID={username};Password={password};Integrated Security=False"
+def load_bases(appsettings_path: str) -> dict[str, str]:
+    with open(appsettings_path, encoding="utf-8") as f:
+        data = json.load(f)
 
-
-def shell_export(name: str, value: str) -> str:
-  # bash-safe single-quoted export
-    escaped = value.replace("'", "'\"'\"'")
-    return f"export ConnectionStrings__{name}='{escaped}'"
+    connection_strings = data.get("ConnectionStrings") or {}
+    bases: dict[str, str] = {}
+    for name, base_cs in connection_strings.items():
+        if not isinstance(base_cs, str) or not base_cs.strip():
+            continue
+        bases[name] = strip_windows_auth(base_cs)
+    return bases
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("appsettings_path", help="Path to appsettings.{ENV}.json")
-    parser.add_argument("username", help="SQL login user (from DB_USERNAME secret)")
-    parser.add_argument("password", help="SQL login password (from DB_PASSWORD secret)")
+    parser.add_argument(
+        "--bases-only",
+        action="store_true",
+        help="Print name<TAB>stripped_base per line (no credentials; for GHA bash assembly).",
+    )
+    parser.add_argument("username", nargs="?", help="SQL login (local only; not used with --bases-only)")
+    parser.add_argument("password", nargs="?", help="SQL password (local only; not used with --bases-only)")
     args = parser.parse_args()
 
-    with open(args.appsettings_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    connection_strings = data.get("ConnectionStrings") or {}
-    if not connection_strings:
-        print("No ConnectionStrings section found.", file=sys.stderr)
+    bases = load_bases(args.appsettings_path)
+    if not bases:
+        print(
+            f"No non-empty ConnectionStrings found in {args.appsettings_path}.",
+            file=sys.stderr,
+        )
         return 1
 
-    for name, base_cs in connection_strings.items():
-        if not isinstance(base_cs, str) or not base_cs.strip():
-            continue
-        resolved = build_sql_connection_string(base_cs, args.username, args.password)
-        print(shell_export(name, resolved))
+    if args.bases_only:
+        for name, base in bases.items():
+            print(f"{name}\t{base}")
+        return 0
+
+    if not args.username or not args.password:
+        print("username and password are required unless --bases-only is set.", file=sys.stderr)
+        return 1
+
+    for name, base in bases.items():
+        resolved = f"{base};User ID={args.username};Password={args.password};Integrated Security=False"
+        escaped = resolved.replace("'", "'\"'\"'")
+        print(f"export ConnectionStrings__{name}='{escaped}'")
 
     return 0
 
