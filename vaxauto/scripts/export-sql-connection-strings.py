@@ -9,7 +9,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+
+
+def quote_connection_string_value(value: str) -> str:
+    """Quote values that would break semicolon-delimited connection strings."""
+    if any(char in value for char in (';', '=', '"')):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def build_sql_connection_string(base: str, username: str, password: str) -> str:
+    user = quote_connection_string_value(username)
+    pwd = quote_connection_string_value(password)
+    return f"{base};User ID={user};Password={pwd};Integrated Security=False"
 
 
 def strip_windows_auth(connection_string: str) -> str:
@@ -54,6 +68,11 @@ def main() -> int:
         action="store_true",
         help="Print name<TAB>stripped_base per line (no credentials; for GHA bash assembly).",
     )
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help="Print name<TAB>full_connection_string using DB_USERNAME/DB_PASSWORD env vars.",
+    )
     parser.add_argument("username", nargs="?", help="SQL login (local only; not used with --bases-only)")
     parser.add_argument("password", nargs="?", help="SQL password (local only; not used with --bases-only)")
     args = parser.parse_args()
@@ -71,12 +90,22 @@ def main() -> int:
             print(f"{name}\t{base}")
         return 0
 
+    if args.resolve:
+        username = os.environ.get("DB_USERNAME", "")
+        password = os.environ.get("DB_PASSWORD", "")
+        if not username or not password:
+            print("DB_USERNAME and DB_PASSWORD must be set for --resolve.", file=sys.stderr)
+            return 1
+        for name, base in bases.items():
+            print(f"{name}\t{build_sql_connection_string(base, username, password)}")
+        return 0
+
     if not args.username or not args.password:
         print("username and password are required unless --bases-only is set.", file=sys.stderr)
         return 1
 
     for name, base in bases.items():
-        resolved = f"{base};User ID={args.username};Password={args.password};Integrated Security=False"
+        resolved = build_sql_connection_string(base, args.username, args.password)
         escaped = resolved.replace("'", "'\"'\"'")
         print(f"export ConnectionStrings__{name}='{escaped}'")
 
