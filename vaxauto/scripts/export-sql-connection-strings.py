@@ -30,8 +30,12 @@ def strip_windows_auth(connection_string: str) -> str:
 
 
 def load_bases(appsettings_path: str) -> dict[str, str]:
-    with open(appsettings_path, encoding="utf-8") as f:
-        data = json.load(f)
+    raw = open(appsettings_path, encoding="utf-8").read().strip()
+    if not raw:
+        print(f"{appsettings_path} is empty.", file=sys.stderr)
+        return {}
+
+    data = json.loads(raw)
 
     connection_strings = data.get("ConnectionStrings") or {}
     bases: dict[str, str] = {}
