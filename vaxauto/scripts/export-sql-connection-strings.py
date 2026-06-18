@@ -13,16 +13,19 @@ import os
 import sys
 
 
-def quote_connection_string_value(value: str) -> str:
-    """Quote values that would break semicolon-delimited connection strings."""
-    if any(char in value for char in (';', '=', '"')):
+def quote_connection_string_value(value: str, *, always_quote: bool = False) -> str:
+    """Quote values so ';' inside passwords does not break SqlClient parsing."""
+    if not value:
+        return value
+    if always_quote or any(char in value for char in (";", "=", '"')):
         return '"' + value.replace('"', '""') + '"'
     return value
 
 
 def build_sql_connection_string(base: str, username: str, password: str) -> str:
     user = quote_connection_string_value(username)
-    pwd = quote_connection_string_value(password)
+    # Always quote password — common CI passwords contain ';' or get truncated otherwise.
+    pwd = quote_connection_string_value(password, always_quote=True)
     return f"{base};User ID={user};Password={pwd};Integrated Security=False"
 
 
