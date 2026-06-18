@@ -24,10 +24,10 @@ if [ ! -f "$APPSETTINGS" ]; then
   exit 1
 fi
 
-USER_PREVIEW="${DB_USERNAME:0:8}***"
-PASS_PREVIEW="${DB_PASSWORD:0:8}***"
-echo "DB user (masked): $USER_PREVIEW"
-echo "DB password (masked): $PASS_PREVIEW"
+# Register secrets with GHA log masking (never echo username/password or substrings).
+echo "::add-mask::${DB_USERNAME}"
+echo "::add-mask::${DB_PASSWORD}"
+
 echo "Building ConnectionStrings__* from $APPSETTINGS for ENV=$ENV_UPPER"
 
 RESOLVED_LINES="$(python3 scripts/export-sql-connection-strings.py "$APPSETTINGS" --resolve)" || {

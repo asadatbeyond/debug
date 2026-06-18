@@ -1,7 +1,9 @@
+using Microsoft.Data.SqlClient;
+
 namespace VaxCare.Data
 {
     /// <summary>
-    /// Safe connection string logging for CI/debug (credentials show first 2 chars only).
+    /// Safe connection string logging for CI/debug (server/catalog only — no credentials).
     /// Enable with LOG_CONNECTION_STRINGS=Y (always on when ENV is set in Docker/CI).
     /// </summary>
     public static class ConnectionStringDiagnostics
@@ -37,72 +39,34 @@ namespace VaxCare.Data
                 }
             }
 
-            Console.WriteLine(
-                $"[DB config] ConnectionStrings:{name} => {ToMaskedLogString(connectionString)}");
+            Console.WriteLine($"[DB config] ConnectionStrings:{name} {ToDiagnosticSummary(connectionString)}");
         }
 
-        public static string ToMaskedLogString(string? connectionString)
+        public static string ToDiagnosticSummary(string? connectionString)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
             {
                 return "<empty>";
             }
 
-            var parts = new List<string>();
-            foreach (var fragment in connectionString.Split(';'))
+            try
             {
-                var piece = fragment.Trim();
-                if (string.IsNullOrEmpty(piece))
-                {
-                    continue;
-                }
+                var builder = new SqlConnectionStringBuilder(connectionString);
+                var sqlAuthConfigured = !builder.IntegratedSecurity
+                    && !string.IsNullOrEmpty(builder.UserID)
+                    && !string.IsNullOrEmpty(builder.Password);
 
-                var separatorIndex = piece.IndexOf('=');
-                if (separatorIndex <= 0)
-                {
-                    parts.Add(piece);
-                    continue;
-                }
-
-                var key = piece[..separatorIndex].Trim();
-                var value = Unquote(piece[(separatorIndex + 1)..].Trim());
-                parts.Add(IsCredentialKey(key)
-                    ? $"{key}={MaskPrefix(value)}"
-                    : $"{key}={value}");
+                return string.Join(
+                    ";",
+                    $"DataSource={builder.DataSource}",
+                    $"InitialCatalog={builder.InitialCatalog}",
+                    $"IntegratedSecurity={builder.IntegratedSecurity}",
+                    $"SqlAuthConfigured={sqlAuthConfigured}");
             }
-
-            return string.Join(";", parts);
-        }
-
-        private static string Unquote(string value)
-        {
-            if (value.Length >= 2 && value.StartsWith('"') && value.EndsWith('"'))
+            catch (Exception ex)
             {
-                return value[1..^1].Replace("\"\"", "\"");
+                return $"parse-error={ex.Message}";
             }
-
-            return value;
-        }
-
-        private static bool IsCredentialKey(string key)
-        {
-            var normalized = key.Replace(" ", "", StringComparison.Ordinal).ToLowerInvariant();
-            return normalized is "userid" or "uid" or "password" or "pwd";
-        }
-
-        private static string MaskPrefix(string value)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                return "<empty>";
-            }
-
-            if (value.Length <= 2)
-            {
-                return new string('*', value.Length);
-            }
-
-            return value[..2] + "***";
         }
     }
 }
