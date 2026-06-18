@@ -28,6 +28,9 @@ namespace VaxCare.Tests.External
                 "ConnectionStrings:DataEntry is not configured. " +
                 "Set ConnectionStrings__DataEntry in CI or appsettings.{ENV}.json locally.");
 
+            Console.WriteLine(
+                $"[DB config] ConnectionStrings:DataEntry {VaxCare.Data.ConnectionStringDiagnostics.ToDiagnosticSummary(connectionString)}");
+
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync();
 
@@ -47,6 +50,15 @@ namespace VaxCare.Tests.External
 
         private static string? ResolveDataEntryConnectionString()
         {
+            // NightlyBilling ConfigManager order: CONNECTIONSTRINGS__{ENV}, then config key.
+            var envUpper = (Environment.GetEnvironmentVariable("ENV") ?? "STG").ToUpperInvariant();
+            var fromNbStyle = Environment.GetEnvironmentVariable($"CONNECTIONSTRINGS__{envUpper}")
+                ?? Environment.GetEnvironmentVariable("CONNECTIONSTRINGS__STG");
+            if (!string.IsNullOrWhiteSpace(fromNbStyle))
+            {
+                return fromNbStyle;
+            }
+
             var configuration = TestConfigurationBuilder.Build();
             var connectionString = configuration.GetConnectionString("DataEntry");
             if (!string.IsNullOrWhiteSpace(connectionString))
