@@ -28,6 +28,13 @@ fi
 echo "::add-mask::${DB_USERNAME}"
 echo "::add-mask::${DB_PASSWORD}"
 
+# Fingerprints only — compare with NightlyBilling stg job (same value => same fingerprint).
+secret_fingerprint() {
+  printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 12)}'
+}
+echo "DB_USERNAME fingerprint: $(secret_fingerprint "${DB_USERNAME}") (length ${#DB_USERNAME})"
+echo "DB_PASSWORD fingerprint: $(secret_fingerprint "${DB_PASSWORD}") (length ${#DB_PASSWORD})"
+
 echo "Building ConnectionStrings__* from $APPSETTINGS for ENV=$ENV_UPPER"
 
 BASE_LINES="$(python3 scripts/export-sql-connection-strings.py "$APPSETTINGS" --bases-only)" || {
@@ -51,6 +58,13 @@ while IFS=$'\t' read -r name base; do
   echo "::add-mask::${resolved}"
   echo "Connection string ${name} resolved (credentials masked)."
 done <<< "$BASE_LINES"
+
+# NightlyBilling uses CONNECTIONSTRINGS__{ENV} for DataEntry — mirror for smoke tests / cross-repo parity.
+if [ -n "${ConnectionStrings__DataEntry:-}" ]; then
+  export "CONNECTIONSTRINGS__${ENV_UPPER}=${ConnectionStrings__DataEntry}"
+  echo "::add-mask::${ConnectionStrings__DataEntry}"
+  echo "CONNECTIONSTRINGS__${ENV_UPPER} set from DataEntry (NightlyBilling-compatible env key)."
+fi
 
 for key in "${REQUIRED_KEYS[@]}"; do
   var="ConnectionStrings__${key}"
