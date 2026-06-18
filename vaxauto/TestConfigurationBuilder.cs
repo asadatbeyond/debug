@@ -2,7 +2,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace VaxCare.Core.Helpers
 {
-    internal static class TestConfigurationBuilder
+    public static class TestConfigurationBuilder
     {
         public static IConfigurationRoot Build()
         {
