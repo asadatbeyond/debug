@@ -33,5 +33,28 @@ namespace NightlyBillingUnitTests
                 Console.WriteLine($"  {columnName}: {value ?? "<null>"}");
             }
         }
+
+        [Test]
+        public async Task CanConnectToDataEntryDatabase()
+        {
+            string environment = (Environment.GetEnvironmentVariable("ENV") ?? "stg").ToLowerInvariant();
+            string connectionString = ConfigManager.GetConnectionString(environment);
+
+            Console.WriteLine($"DataEntry connectivity test environment: {environment}");
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            await using var command = new SqlCommand("SELECT DB_NAME() AS DatabaseName", connection);
+            object? databaseName = await command.ExecuteScalarAsync();
+
+            Assert.That(databaseName, Is.Not.Null, "DB_NAME() returned null.");
+            Assert.That(
+                databaseName!.ToString(),
+                Is.EqualTo("DataEntry").IgnoreCase,
+                "Connected database must be DataEntry.");
+
+            Console.WriteLine($"Connected to database: {databaseName}");
+        }
     }
 }

@@ -1,45 +1,42 @@
-name: NightlyBilling SQL Connectivity Check
+name: NightlyBilling SQL Connectivity Check (Docker)
 
 on:
-  push:
-    branches:
-      - docker-gha
-  pull_request:
-    branches:
-      - docker-gha
   workflow_dispatch:
     inputs:
       environment:
-        description: Target environment
+        description: Target environment (uses GitHub Environment secrets for DB login)
         required: true
         type: choice
         options:
           - stg
           - qa
         default: stg
-      query:
-        description: SQL query to run
-        required: false
-        default: SELECT DB_NAME() AS DatabaseName, @@SERVERNAME AS ServerName, SUSER_SNAME() AS LoginName, @@VERSION AS SqlVersion
 
 permissions:
+  id-token: write
   contents: read
+  packages: read
+
+env:
+  NB_DOCKER_IMAGE: nightlybilling-sql-connectivity
+  TEST_FILTER: FullyQualifiedName~NightlyBillingUnitTests.SqlConnectivitySmokeTests
 
 jobs:
   sql_connectivity_check:
-    name: Check SQL connectivity
+    name: Verify DataEntry SQL connectivity (${{ github.event.inputs.environment }})
+    environment: ${{ github.event.inputs.environment }}
     runs-on:
       group: QA
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          dotnet-version: 8.0.x
+          python-version: "3.x"
 
       - name: Resolve module directory
         id: module_dir
@@ -60,53 +57,7 @@ jobs:
           echo "path=$MODULE_DIR" >> "$GITHUB_OUTPUT"
           echo "NightlyBilling module directory: $MODULE_DIR"
 
-      - name: Ensure SQL client tools available
-        id: sql_tools
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if command -v sqlcmd >/dev/null 2>&1; then
-            echo "sqlcmd is already installed."
-            echo "sqlcmd_available=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "sqlcmd is not installed."
-          echo "This project uses Microsoft.Data.SqlClient 5.2.1, so a full SQL Server installation is not required on the runner."
-          echo "Attempting to install sqlcmd client tools for additional diagnostics."
-
-          if [ "$(uname -s)" != "Linux" ] || ! command -v apt-get >/dev/null 2>&1 || ! command -v sudo >/dev/null 2>&1; then
-            echo "Automatic sqlcmd installation is only configured for Linux runners with apt-get and sudo."
-            echo "sqlcmd_available=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          . /etc/os-release
-          UBUNTU_VERSION="${VERSION_ID:-22.04}"
-          if [ "$UBUNTU_VERSION" != "22.04" ] && [ "$UBUNTU_VERSION" != "24.04" ]; then
-            UBUNTU_VERSION="22.04"
-          fi
-
-          if rg -n "packages\\.microsoft\\.com" /etc/apt/sources.list /etc/apt/sources.list.d/*.list >/dev/null 2>&1; then
-            echo "Microsoft apt source already configured on runner; reusing existing repository."
-            sudo rm -f /etc/apt/sources.list.d/mssql-release.list
-          else
-            sudo mkdir -p /etc/apt/keyrings
-            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-              | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/microsoft-prod.gpg
-            curl -fsSL "https://packages.microsoft.com/config/ubuntu/${UBUNTU_VERSION}/prod.list" \
-              | sudo tee /etc/apt/sources.list.d/mssql-release.list >/dev/null
-          fi
-
-          sudo ACCEPT_EULA=Y apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18
-
-          echo "/opt/mssql-tools18/bin" >> "$GITHUB_PATH"
-          echo "sqlcmd_available=true" >> "$GITHUB_OUTPUT"
-
-      - name: Configure NuGet
-        id: nuget
+      - name: Configure NuGet (optional)
         shell: bash
         env:
           NB_NUGET_CONFIG_BASE64: ${{ secrets.NB_NUGET_CONFIG_BASE64 }}
@@ -115,9 +66,10 @@ jobs:
           set -euo pipefail
 
           MODULE_DIR="${{ steps.module_dir.outputs.path }}"
-          NUGET_CONFIG_PATH="$MODULE_DIR/NuGet.sqlcheck.config"
+          echo "NightlyBilling module directory: $MODULE_DIR"
 
           if [ -n "${AZURE_DEVOPS_PASSWORD:-}" ]; then
+            echo "AZURE_DEVOPS_PASSWORD provided; generating $MODULE_DIR/NuGet.auth.config."
             printf '%s\n' \
               '<?xml version="1.0" encoding="utf-8"?>' \
               '<configuration>' \
@@ -132,129 +84,170 @@ jobs:
               '    </VaxCare>' \
               '  </packageSourceCredentials>' \
               '</configuration>' \
-              > "$NUGET_CONFIG_PATH"
-          elif [ -n "${NB_NUGET_CONFIG_BASE64:-}" ]; then
-            echo "${NB_NUGET_CONFIG_BASE64}" | base64 --decode > "$NUGET_CONFIG_PATH"
-          else
-            printf '%s\n' \
-              '<?xml version="1.0" encoding="utf-8"?>' \
-              '<configuration>' \
-              '  <packageSources>' \
-              '    <add key="NuGet" value="https://api.nuget.org/v3/index.json" />' \
-              '  </packageSources>' \
-              '</configuration>' \
-              > "$NUGET_CONFIG_PATH"
+              > "$MODULE_DIR/NuGet.auth.config"
+            exit 0
           fi
 
-          echo "path=$NUGET_CONFIG_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve SQL check inputs
-        id: sql_inputs
-        shell: bash
-        env:
-          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment }}
-          INPUT_QUERY: ${{ github.event.inputs.query }}
-        run: |
-          set -euo pipefail
-
-          TARGET_ENV="${INPUT_ENVIRONMENT:-}"
-          if [ -z "$TARGET_ENV" ]; then
-            TARGET_ENV="stg"
+          if [ -n "${NB_NUGET_CONFIG_BASE64:-}" ]; then
+            echo "${NB_NUGET_CONFIG_BASE64}" | base64 --decode > "$MODULE_DIR/NuGet.ci.config"
+            echo "Wrote $MODULE_DIR/NuGet.ci.config from NB_NUGET_CONFIG_BASE64 secret."
+            exit 0
           fi
 
-          QUERY_INPUT="${INPUT_QUERY:-}"
-          if [ -z "$QUERY_INPUT" ]; then
-            QUERY_INPUT='SELECT DB_NAME() AS DatabaseName, @@SERVERNAME AS ServerName, SUSER_SNAME() AS LoginName, @@VERSION AS SqlVersion'
+          if [ -f "$MODULE_DIR/NuGet.config" ]; then
+            echo "Found $MODULE_DIR/NuGet.config in repo; will use it for restore/build."
+            exit 0
           fi
 
-          {
-            echo "environment=$TARGET_ENV"
-            echo "query<<EOF"
-            echo "$QUERY_INPUT"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "No repo NuGet config and no secrets; will try runner's NuGet config (if present)."
 
-      - name: Resolve SQL connection mode
-        id: sql_auth
-        shell: bash
-        env:
-          TARGET_ENV: ${{ steps.sql_inputs.outputs.environment }}
-          NB_CONNECTION_STRING_STG: ${{ secrets.NB_CONNECTION_STRING_STG }}
-          NB_CONNECTION_STRING_QA: ${{ secrets.NB_CONNECTION_STRING_QA }}
-        run: |
-          set -euo pipefail
-
-          CONNECTION_MODE="config"
-
-          if [ "$TARGET_ENV" = "stg" ] && [ -n "${NB_CONNECTION_STRING_STG:-}" ]; then
-            CONNECTION_MODE="secret"
-          fi
-
-          if [ "$TARGET_ENV" = "qa" ] && [ -n "${NB_CONNECTION_STRING_QA:-}" ]; then
-            CONNECTION_MODE="secret"
-          fi
-
-          if [ "$CONNECTION_MODE" = "secret" ]; then
-            echo "Using CI secret-based SQL connection string for $TARGET_ENV."
-          else
-            echo "No CI SQL connection secret configured for $TARGET_ENV; falling back to testhost.dll.config and runner integrated auth."
-          fi
-
-          echo "mode=$CONNECTION_MODE" >> "$GITHUB_OUTPUT"
-
-      - name: Restore unit test project
+      - name: Build Docker image
         shell: bash
         run: |
           set -euo pipefail
 
           MODULE_DIR="${{ steps.module_dir.outputs.path }}"
-          dotnet restore "$MODULE_DIR/NightlyBillingUnitTests/NightlyBillingUnitTests.csproj" \
-            --configfile "${{ steps.nuget.outputs.path }}"
+          echo "NightlyBilling module directory: $MODULE_DIR"
 
-      - name: Run SQL connectivity smoke test
+          NUGET_CONFIG_SRC=""
+          if [ -f "$MODULE_DIR/NuGet.auth.config" ]; then
+            NUGET_CONFIG_SRC="$MODULE_DIR/NuGet.auth.config"
+          elif [ -f "$MODULE_DIR/NuGet.ci.config" ]; then
+            NUGET_CONFIG_SRC="$MODULE_DIR/NuGet.ci.config"
+          elif [ -f "$MODULE_DIR/NuGet.config" ]; then
+            NUGET_CONFIG_SRC="$MODULE_DIR/NuGet.config"
+          elif [ -f "$HOME/.nuget/NuGet/NuGet.Config" ]; then
+            NUGET_CONFIG_SRC="$HOME/.nuget/NuGet/NuGet.Config"
+          fi
+
+          SECRET_ARGS=""
+          if [ -n "$NUGET_CONFIG_SRC" ]; then
+            echo "Using NuGet config for build secret: $NUGET_CONFIG_SRC"
+            SECRET_ARGS="$SECRET_ARGS --secret id=nuget_config,src=$NUGET_CONFIG_SRC"
+          else
+            echo "No NuGet config found; build may fail on private packages."
+          fi
+
+          DOCKER_BUILDKIT=1 docker build \
+            -t "${NB_DOCKER_IMAGE}:ci" \
+            -f .github/docker/nightlybilling.Dockerfile \
+            $SECRET_ARGS \
+            "$MODULE_DIR"
+
+      - name: Run SQL connectivity tests in Docker
         id: run_sql_check
-        shell: bash
         env:
-          ENV: ${{ steps.sql_inputs.outputs.environment }}
-          NB_SQL_CONNECTIVITY_QUERY: ${{ steps.sql_inputs.outputs.query }}
-          NB_CONNECTION_STRING_STG: ${{ secrets.NB_CONNECTION_STRING_STG }}
-          NB_CONNECTION_STRING_QA: ${{ secrets.NB_CONNECTION_STRING_QA }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        shell: bash
         run: |
-          set -euo pipefail
+          START_TS="$(date +%s)"
+          set +e
 
-          MODULE_DIR="${{ steps.module_dir.outputs.path }}"
-          RESULTS_DIR="$PWD/TestResults/sql-connectivity"
+          TARGET_ENV="${{ github.event.inputs.environment }}"
+          case "$TARGET_ENV" in
+            stg)
+              CONFIG_KEY="STG"
+              CONN_ENV_NAME="CONNECTIONSTRINGS__STG"
+              RESULTS_SUBDIR="stg"
+              ;;
+            qa)
+              CONFIG_KEY="QA"
+              CONN_ENV_NAME="CONNECTIONSTRINGS__QA"
+              RESULTS_SUBDIR="qa"
+              ;;
+            *)
+              echo "Unsupported environment: $TARGET_ENV" >&2
+              exit 1
+              ;;
+          esac
 
+          RESULTS_DIR="$PWD/TestResults/sql-connectivity/${RESULTS_SUBDIR}"
           : > sql-connectivity-output.log
           mkdir -p "$RESULTS_DIR"
-          dotnet test "$MODULE_DIR/NightlyBillingUnitTests/NightlyBillingUnitTests.csproj" \
-            --no-restore \
-            --logger "trx;LogFileName=sql-connectivity.trx" \
-            --results-directory "$RESULTS_DIR" \
-            --filter "FullyQualifiedName~NightlyBillingUnitTests.SqlConnectivitySmokeTests" 2>&1 | tee -a sql-connectivity-output.log
 
-      - name: Write GitHub summary
+          MODULE_DIR="${{ steps.module_dir.outputs.path }}"
+          TESTHOST_CONFIG="$MODULE_DIR/NightlyBillingUnitTests/testhost.dll.config"
+          if [ ! -f "$TESTHOST_CONFIG" ]; then
+            echo "Expected test host config not found: $TESTHOST_CONFIG" >&2
+            exit 1
+          fi
+
+          if [ -z "${DB_USERNAME:-}" ]; then
+            echo "::error::DB_USERNAME is empty or not set. Add it as a secret on GitHub Environment '${TARGET_ENV}'." >&2
+            exit 1
+          fi
+          if [ -z "${DB_PASSWORD:-}" ]; then
+            echo "::error::DB_PASSWORD is empty or not set. Add it as a secret on GitHub Environment '${TARGET_ENV}'." >&2
+            exit 1
+          fi
+
+          BASE_CS="$(python3 scripts/connection_string_base_from_testhost_config.py "$TESTHOST_CONFIG" "$CONFIG_KEY")"
+          RESOLVED_CONNECTION_STRING="${BASE_CS};User ID=${DB_USERNAME};Password=${DB_PASSWORD};Integrated Security=False"
+          echo "::add-mask::$RESOLVED_CONNECTION_STRING"
+          echo "Connection string (log-safe, no credentials): ${BASE_CS};Integrated Security=False"
+          echo "Running SqlConnectivitySmokeTests against ${CONFIG_KEY} (filter: ${TEST_FILTER})"
+
+          export "${CONN_ENV_NAME}=${RESOLVED_CONNECTION_STRING}"
+
+          docker run --rm \
+            -v "$RESULTS_DIR:/test-results" \
+            -e "ENV=${CONFIG_KEY}" \
+            -e "${CONN_ENV_NAME}" \
+            "${NB_DOCKER_IMAGE}:ci" \
+            --filter "${TEST_FILTER}" \
+            --logger "trx;LogFileName=sql-connectivity-${RESULTS_SUBDIR}.trx" \
+            --results-directory /test-results \
+            2>&1 | tee -a sql-connectivity-output.log
+
+          END_TS="$(date +%s)"
+          DURATION_SECONDS="$((END_TS - START_TS))"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "duration_seconds=$DURATION_SECONDS" >> "$GITHUB_OUTPUT"
+          echo "config_key=$CONFIG_KEY" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
+
+      - name: Generate HTML test report
         if: always()
         shell: bash
         run: |
-          {
-            echo "## SQL Connectivity Check"
-            echo ""
-            echo "- Environment: ${{ steps.sql_inputs.outputs.environment }}"
-            echo "- Connection mode: ${{ steps.sql_auth.outputs.mode }}"
-            echo "- sqlcmd available: ${{ steps.sql_tools.outputs.sqlcmd_available }}"
-            echo "- Project SQL client: Microsoft.Data.SqlClient 5.2.1"
-            echo "- Query: \`${{ steps.sql_inputs.outputs.query }}\`"
-            echo "- Result: ${{ steps.run_sql_check.outcome }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          TARGET_ENV="${{ github.event.inputs.environment }}"
+          python3 scripts/trx_to_html.py \
+            --input-dir "TestResults/sql-connectivity/${TARGET_ENV}" \
+            --output-file "TestResults/sql-connectivity/${TARGET_ENV}/sql-connectivity.html" \
+            --title "NightlyBilling SQL Connectivity (${TARGET_ENV^^})"
 
-      - name: Upload connectivity log
+      - name: Upload connectivity artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightlybilling-sql-connectivity-log
+          name: nightlybilling-sql-connectivity-${{ github.event.inputs.environment }}
           path: |
             sql-connectivity-output.log
             TestResults/sql-connectivity
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Write GitHub step summary
+        if: always()
+        shell: bash
+        run: |
+          TARGET_ENV="${{ github.event.inputs.environment }}"
+          CONFIG_KEY="${{ steps.run_sql_check.outputs.config_key }}"
+          EXIT_CODE="${{ steps.run_sql_check.outputs.exit_code }}"
+          DURATION_SECONDS="${{ steps.run_sql_check.outputs.duration_seconds }}"
+          if [ "${EXIT_CODE:-1}" = "0" ]; then
+            RESULT="passed"
+          else
+            RESULT="failed"
+          fi
+
+          {
+            echo "## SQL connectivity check (${TARGET_ENV})"
+            echo ""
+            echo "- Environment: \`${TARGET_ENV}\` (config key \`${CONFIG_KEY:-unknown}\`)"
+            echo "- Tests: \`SqlConnectivitySmokeTests\` (includes \`CanConnectToDataEntryDatabase\`)"
+            echo "- Duration: ${DURATION_SECONDS:-unknown}s"
+            echo "- Result: **${RESULT}** (exit code ${EXIT_CODE:-unknown})"
+          } >> "$GITHUB_STEP_SUMMARY"
