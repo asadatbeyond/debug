@@ -1,6 +1,12 @@
 name: NightlyBilling SQL Connectivity Check (Docker)
 
 on:
+  push:
+    branches:
+      - docker-gha
+  pull_request:
+    branches:
+      - docker-gha
   workflow_dispatch:
     inputs:
       environment:
@@ -11,6 +17,12 @@ on:
           - stg
           - qa
         default: stg
+      filter:
+        description: >
+          Optional NUnit/dotnet test filter. Leave empty to run SqlConnectivitySmokeTests.
+          Example: FullyQualifiedName~CanConnectToDataEntryDatabase
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -19,12 +31,12 @@ permissions:
 
 env:
   NB_DOCKER_IMAGE: nightlybilling-sql-connectivity
-  TEST_FILTER: FullyQualifiedName~NightlyBillingUnitTests.SqlConnectivitySmokeTests
+  DEFAULT_TEST_FILTER: FullyQualifiedName~NightlyBillingUnitTests.SqlConnectivitySmokeTests
 
 jobs:
   sql_connectivity_check:
-    name: Verify DataEntry SQL connectivity (${{ github.event.inputs.environment }})
-    environment: ${{ github.event.inputs.environment }}
+    name: Verify DataEntry SQL connectivity (${{ github.event.inputs.environment || 'stg' }})
+    environment: ${{ github.event.inputs.environment || 'stg' }}
     runs-on:
       group: QA
     timeout-minutes: 15
@@ -144,7 +156,13 @@ jobs:
           START_TS="$(date +%s)"
           set +e
 
-          TARGET_ENV="${{ github.event.inputs.environment }}"
+          TARGET_ENV="${{ github.event.inputs.environment || 'stg' }}"
+          FILTER_INPUT="${{ github.event.inputs.filter }}"
+          TEST_FILTER="${DEFAULT_TEST_FILTER}"
+          if [ -n "${FILTER_INPUT//[[:space:]]/}" ]; then
+            TEST_FILTER="$FILTER_INPUT"
+          fi
+
           case "$TARGET_ENV" in
             stg)
               CONFIG_KEY="STG"
@@ -212,7 +230,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          TARGET_ENV="${{ github.event.inputs.environment }}"
+          TARGET_ENV="${{ github.event.inputs.environment || 'stg' }}"
           python3 scripts/trx_to_html.py \
             --input-dir "TestResults/sql-connectivity/${TARGET_ENV}" \
             --output-file "TestResults/sql-connectivity/${TARGET_ENV}/sql-connectivity.html" \
@@ -222,7 +240,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nightlybilling-sql-connectivity-${{ github.event.inputs.environment }}
+          name: nightlybilling-sql-connectivity-${{ github.event.inputs.environment || 'stg' }}
           path: |
             sql-connectivity-output.log
             TestResults/sql-connectivity
@@ -233,7 +251,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          TARGET_ENV="${{ github.event.inputs.environment }}"
+          TARGET_ENV="${{ github.event.inputs.environment || 'stg' }}"
           CONFIG_KEY="${{ steps.run_sql_check.outputs.config_key }}"
           EXIT_CODE="${{ steps.run_sql_check.outputs.exit_code }}"
           DURATION_SECONDS="${{ steps.run_sql_check.outputs.duration_seconds }}"
