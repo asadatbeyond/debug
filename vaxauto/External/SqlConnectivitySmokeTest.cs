@@ -48,6 +48,31 @@ namespace VaxCare.Tests.External
             }
         }
 
+        [Fact]
+        public async Task CanConnectToDataEntryDatabase()
+        {
+            var environment = (Environment.GetEnvironmentVariable("ENV") ?? "STG").ToUpperInvariant();
+            var connectionString = ResolveDataEntryConnectionString();
+            connectionString.ShouldNotBeNullOrWhiteSpace(
+                "ConnectionStrings:DataEntry is not configured. " +
+                "Set ConnectionStrings__DataEntry in CI or appsettings.{ENV}.json locally.");
+
+            Console.WriteLine($"DataEntry connectivity test environment: {environment}");
+            Console.WriteLine(
+                $"[DB config] ConnectionStrings:DataEntry {VaxCare.Data.ConnectionStringDiagnostics.ToDiagnosticSummary(connectionString)}");
+
+            await using var connection = new SqlConnection(connectionString);
+            await connection.OpenAsync();
+
+            await using var command = new SqlCommand("SELECT DB_NAME() AS DatabaseName", connection);
+            var databaseName = await command.ExecuteScalarAsync();
+
+            databaseName.ShouldNotBeNull("DB_NAME() returned null.");
+            databaseName!.ToString().ShouldBe("DataEntry", StringCompareShould.IgnoreCase);
+
+            Console.WriteLine($"Connected to database: {databaseName}");
+        }
+
         private static string? ResolveDataEntryConnectionString()
         {
             // NightlyBilling ConfigManager order: CONNECTIONSTRINGS__{ENV}, then config key.

@@ -1,0 +1,168 @@
+name: VaxCare SQL Connectivity Check (Docker)
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (uses GitHub Environment secrets for DB login)
+        required: true
+        type: choice
+        options:
+          - stg
+          - qa
+        default: stg
+      filter:
+        description: >
+          Optional xUnit/dotnet test filter. Leave empty to run SqlConnectivitySmokeTest.
+          Example: FullyQualifiedName~CanConnectToDataEntryDatabase
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_IMAGE: vaxcare-sql-connectivity
+  DEFAULT_TEST_FILTER: FullyQualifiedName~SqlConnectivitySmokeTest
+
+jobs:
+  sql_connectivity_check:
+    name: Verify DataEntry SQL connectivity (${{ github.event.inputs.environment || 'stg' }})
+    environment: ${{ github.event.inputs.environment || 'stg' }}
+    runs-on:
+      group: QA
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t "${DOCKER_IMAGE}:ci" .
+
+      - name: Run SQL connectivity tests in Docker
+        id: run_sql_check
+        env:
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        shell: bash
+        run: |
+          START_TS="$(date +%s)"
+          set +e
+
+          TARGET_ENV="${{ github.event.inputs.environment || 'stg' }}"
+          FILTER_INPUT="${{ github.event.inputs.filter }}"
+          TEST_FILTER="${DEFAULT_TEST_FILTER}"
+          if [ -n "${FILTER_INPUT//[[:space:]]/}" ]; then
+            TEST_FILTER="$FILTER_INPUT"
+          fi
+
+          case "$TARGET_ENV" in
+            stg)
+              ENV_UPPER="STG"
+              ;;
+            qa)
+              ENV_UPPER="QA"
+              ;;
+            *)
+              echo "Unsupported environment: $TARGET_ENV" >&2
+              exit 1
+              ;;
+          esac
+
+          RESULTS_DIR="$PWD/TestResults/sql-connectivity/${TARGET_ENV}"
+          : > sql-connectivity-output.log
+          mkdir -p "$RESULTS_DIR"
+          chmod -R 777 TestResults || true
+
+          export ENV="$ENV_UPPER"
+          source scripts/gha-resolve-db-connection-strings.sh
+
+          echo "Running SqlConnectivitySmokeTest against ${ENV_UPPER} (filter: ${TEST_FILTER})"
+
+          docker run --rm \
+            --name vaxcare-sql-connectivity \
+            -e "ENV=${ENV_UPPER}" \
+            -e ConnectionStrings__Sales \
+            -e ConnectionStrings__DataEntry \
+            -e ConnectionStrings__Risk \
+            -e ConnectionStrings__HealthSystems \
+            -e ConnectionStrings__Reporting \
+            -e ConnectionStrings__RealMed \
+            -e "CONNECTIONSTRINGS__${ENV_UPPER}" \
+            -v "${RESULTS_DIR}:/app/TestResults:rw" \
+            "${DOCKER_IMAGE}:ci" \
+            VaxCare.Tests/VaxCare.Tests.csproj \
+            --filter "${TEST_FILTER}" \
+            2>&1 | tee -a sql-connectivity-output.log
+
+          END_TS="$(date +%s)"
+          DURATION_SECONDS="$((END_TS - START_TS))"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "duration_seconds=$DURATION_SECONDS" >> "$GITHUB_OUTPUT"
+          echo "env_upper=$ENV_UPPER" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
+
+      - name: Upload connectivity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vaxcare-sql-connectivity-${{ github.event.inputs.environment || 'stg' }}
+          path: |
+            sql-connectivity-output.log
+            TestResults/sql-connectivity
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Write GitHub step summary
+        if: always()
+        shell: bash
+        run: |
+          TARGET_ENV="${{ github.event.inputs.environment || 'stg' }}"
+          ENV_UPPER="${{ steps.run_sql_check.outputs.env_upper }}"
+          EXIT_CODE="${{ steps.run_sql_check.outputs.exit_code }}"
+          DURATION_SECONDS="${{ steps.run_sql_check.outputs.duration_seconds }}"
+          if [ "${EXIT_CODE:-1}" = "0" ]; then
+            RESULT="passed"
+          else
+            RESULT="failed"
+          fi
+
+          TRX=""
+          if [ -f "TestResults/sql-connectivity/${TARGET_ENV}/TestResults.trx" ]; then
+            TRX="TestResults/sql-connectivity/${TARGET_ENV}/TestResults.trx"
+          fi
+
+          TOTAL="unknown"
+          PASSED="unknown"
+          FAILED="unknown"
+          if [ -n "$TRX" ] && [ -f "$TRX" ]; then
+            TOTAL="$(grep -o '<UnitTestResult' "$TRX" | wc -l | tr -d '[:space:]' || true)"
+            PASSED="$(grep -oE '<UnitTestResult[^>]*outcome="Passed"' "$TRX" | wc -l | tr -d '[:space:]' || true)"
+            FAILED="$(grep -oE '<UnitTestResult[^>]*outcome="Failed"' "$TRX" | wc -l | tr -d '[:space:]' || true)"
+          fi
+
+          {
+            echo "## SQL connectivity check (${TARGET_ENV})"
+            echo ""
+            echo "- Environment: \`${TARGET_ENV}\` (ENV=\`${ENV_UPPER:-unknown}\`)"
+            echo "- Tests: \`SqlConnectivitySmokeTest\` (includes \`CanConnectToDataEntryDatabase\`)"
+            echo "- Duration: ${DURATION_SECONDS:-unknown}s"
+            echo "- Total: ${TOTAL}"
+            echo "- Passed: ${PASSED}"
+            echo "- Failed: ${FAILED}"
+            echo "- Result: **${RESULT}** (exit code ${EXIT_CODE:-unknown})"
+            if [ -f "TestResults/sql-connectivity/${TARGET_ENV}/html/TestReport.html" ]; then
+              echo "- HTML report: \`TestResults/sql-connectivity/${TARGET_ENV}/html/TestReport.html\` (in artifact)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
