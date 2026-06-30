@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Log DB_USERNAME / DB_PASSWORD diagnostics for GHA (5-char prefix + fingerprint; never full values).
+# Log DB_USERNAME / DB_PASSWORD diagnostics for GHA (prefix/suffix previews + fingerprint; never full values).
 # Requires DB_USERNAME and DB_PASSWORD in the environment. Source after empty checks.
 set -euo pipefail
 
@@ -15,9 +15,25 @@ prefix_preview() {
   fi
 }
 
-# Log prefix before ::add-mask:: so compare across repos/jobs (GitHub may still redact substrings).
+suffix_preview() {
+  local value="$1"
+  local len="${#value}"
+  if [ "$len" -eq 0 ]; then
+    echo "<empty>"
+  elif [ "$len" -le 7 ]; then
+    echo "***${value}"
+  else
+    echo "***${value: -7}"
+  fi
+}
+
+# Log previews before ::add-mask:: (GitHub may still redact substrings).
+echo "DB_USERNAME length: ${#DB_USERNAME}"
+echo "DB_PASSWORD length: ${#DB_PASSWORD}"
 echo "DB_USERNAME prefix (first 5): $(prefix_preview "${DB_USERNAME}")"
 echo "DB_PASSWORD prefix (first 5): $(prefix_preview "${DB_PASSWORD}")"
+echo "DB_USERNAME suffix (last 7): $(suffix_preview "${DB_USERNAME}")"
+echo "DB_PASSWORD suffix (last 7): $(suffix_preview "${DB_PASSWORD}")"
 
 echo "::add-mask::${DB_USERNAME}"
 echo "::add-mask::${DB_PASSWORD}"
