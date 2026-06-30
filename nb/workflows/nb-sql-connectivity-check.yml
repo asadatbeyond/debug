@@ -200,6 +200,9 @@ jobs:
             exit 1
           fi
 
+          # shellcheck source=scripts/gha-log-db-secret-fingerprints.sh
+          source "$MODULE_DIR/scripts/gha-log-db-secret-fingerprints.sh"
+
           BASE_CS="$(python3 scripts/connection_string_base_from_testhost_config.py "$TESTHOST_CONFIG" "$CONFIG_KEY")"
           RESOLVED_CONNECTION_STRING="${BASE_CS};User ID=${DB_USERNAME};Password=${DB_PASSWORD};Integrated Security=False"
           echo "::add-mask::$RESOLVED_CONNECTION_STRING"
