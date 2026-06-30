@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Resolve SQL connection strings for GHA (same pattern as NightlyBilling nb-docker-tests-*.yml).
-# Requires: DB_USERNAME, DB_PASSWORD, and ENV (QA or STG).
+# Requires DB_USERNAME_{ENV} / DB_PASSWORD_{ENV} (e.g. DB_USERNAME_STG) or legacy DB_USERNAME / DB_PASSWORD.
 set -euo pipefail
 
 ENV_NAME="${ENV:-STG}"
@@ -10,12 +10,22 @@ APPSETTINGS="VaxCare.Tests/appsettings.${ENV_UPPER}.json"
 
 REQUIRED_KEYS=(Sales DataEntry Risk HealthSystems Reporting RealMed)
 
-if [ -z "${DB_USERNAME:-}" ]; then
-  echo "::error::DB_USERNAME is empty or not set. Add it as a secret on GitHub Environment '${ENV_LOWER}' (or ensure the job can read environment secrets)." >&2
+USERNAME_VAR="DB_USERNAME_${ENV_UPPER}"
+PASSWORD_VAR="DB_PASSWORD_${ENV_UPPER}"
+
+# shellcheck disable=SC2153
+DB_USERNAME="${!USERNAME_VAR:-${DB_USERNAME:-}}"
+# shellcheck disable=SC2153
+DB_PASSWORD="${!PASSWORD_VAR:-${DB_PASSWORD:-}}"
+
+export DB_USERNAME DB_PASSWORD
+
+if [ -z "${DB_USERNAME}" ]; then
+  echo "::error::${USERNAME_VAR} is empty or not set. Add it as a secret (e.g. GitHub secret ${USERNAME_VAR}) for environment '${ENV_LOWER}'." >&2
   exit 1
 fi
-if [ -z "${DB_PASSWORD:-}" ]; then
-  echo "::error::DB_PASSWORD is empty or not set. Add it as a secret on GitHub Environment '${ENV_LOWER}' (or ensure the job can read environment secrets)." >&2
+if [ -z "${DB_PASSWORD}" ]; then
+  echo "::error::${PASSWORD_VAR} is empty or not set. Add it as a secret (e.g. GitHub secret ${PASSWORD_VAR}) for environment '${ENV_LOWER}'." >&2
   exit 1
 fi
 
@@ -24,16 +34,14 @@ if [ ! -f "$APPSETTINGS" ]; then
   exit 1
 fi
 
-# Register secrets with GHA log masking (never echo username/password or substrings).
 echo "::add-mask::${DB_USERNAME}"
 echo "::add-mask::${DB_PASSWORD}"
 
-# Fingerprints only — compare with NightlyBilling stg job (same value => same fingerprint).
 secret_fingerprint() {
   printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 12)}'
 }
-echo "DB_USERNAME fingerprint: $(secret_fingerprint "${DB_USERNAME}") (length ${#DB_USERNAME})"
-echo "DB_PASSWORD fingerprint: $(secret_fingerprint "${DB_PASSWORD}") (length ${#DB_PASSWORD})"
+echo "${USERNAME_VAR} fingerprint: $(secret_fingerprint "${DB_USERNAME}") (length ${#DB_USERNAME})"
+echo "${PASSWORD_VAR} fingerprint: $(secret_fingerprint "${DB_PASSWORD}") (length ${#DB_PASSWORD})"
 
 echo "Building ConnectionStrings__* from $APPSETTINGS for ENV=$ENV_UPPER"
 

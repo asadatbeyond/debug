@@ -74,7 +74,7 @@ def main() -> int:
     parser.add_argument(
         "--resolve",
         action="store_true",
-        help="Print name<TAB>full_connection_string using DB_USERNAME/DB_PASSWORD env vars.",
+        help="Print name<TAB>full_connection_string using DB_USERNAME_{ENV}/DB_PASSWORD_{ENV} env vars.",
     )
     parser.add_argument("username", nargs="?", help="SQL login (local only; not used with --bases-only)")
     parser.add_argument("password", nargs="?", help="SQL password (local only; not used with --bases-only)")
@@ -94,10 +94,21 @@ def main() -> int:
         return 0
 
     if args.resolve:
-        username = os.environ.get("DB_USERNAME", "")
-        password = os.environ.get("DB_PASSWORD", "")
+        env_upper = (os.environ.get("ENV") or "STG").upper()
+        username = (
+            os.environ.get(f"DB_USERNAME_{env_upper}")
+            or os.environ.get("DB_USERNAME", "")
+        )
+        password = (
+            os.environ.get(f"DB_PASSWORD_{env_upper}")
+            or os.environ.get("DB_PASSWORD", "")
+        )
         if not username or not password:
-            print("DB_USERNAME and DB_PASSWORD must be set for --resolve.", file=sys.stderr)
+            print(
+                f"DB_USERNAME_{env_upper} and DB_PASSWORD_{env_upper} "
+                "(or DB_USERNAME / DB_PASSWORD) must be set for --resolve.",
+                file=sys.stderr,
+            )
             return 1
         for name, base in bases.items():
             print(f"{name}\t{build_sql_connection_string(base, username, password)}")
